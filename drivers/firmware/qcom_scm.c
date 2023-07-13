@@ -1207,6 +1207,228 @@ bail_keybuf:
 EXPORT_SYMBOL(qcom_scm_derive_sw_secret);
 
 /**
+ * qcom_scm_generate_ice_key() - Generate a wrapped key for encryption.
+ * @longterm_wrapped_key: the wrapped key returned after key generation
+ * @longterm_wrapped_key_size: size of the wrapped key to be returned.
+ *
+ * Qualcomm wrapped keys need to be generated in a trusted environment.
+ * A generate key  IOCTL call is used to achieve this. These are longterm
+ * in nature as they need to be generated and wrapped only once per
+ * requirement.
+ *
+ * This SCM calls adds support for the generate key IOCTL to interface
+ * with the secure environment to generate and return a wrapped key..
+ *
+ * Return: 0 on success; -errno on failure.
+ */
+int qcom_scm_generate_ice_key(u8 *longterm_wrapped_key,
+			    u32 longterm_wrapped_key_size)
+{
+	struct qcom_scm_desc desc = {
+		.svc = QCOM_SCM_SVC_ES,
+		.cmd =  QCOM_SCM_ES_GENERATE_ICE_KEY,
+		.arginfo = QCOM_SCM_ARGS(2, QCOM_SCM_RW,
+					 QCOM_SCM_VAL),
+		.args[1] = longterm_wrapped_key_size,
+		.owner = ARM_SMCCC_OWNER_SIP,
+	};
+
+	void *longterm_wrapped_keybuf;
+	dma_addr_t longterm_wrapped_key_phys;
+	int ret;
+
+	/*
+	 * Like qcom_scm_ice_set_key(), we use dma_alloc_coherent() to properly
+	 * get a physical address, while guaranteeing that we can zeroize the
+	 * key material later using memzero_explicit().
+	 *
+	 */
+	longterm_wrapped_keybuf = dma_alloc_coherent(__scm->dev,
+				  longterm_wrapped_key_size,
+				  &longterm_wrapped_key_phys, GFP_KERNEL);
+	if (!longterm_wrapped_keybuf)
+		return -ENOMEM;
+
+	desc.args[0] = longterm_wrapped_key_phys;
+
+	ret = qcom_scm_call(__scm->dev, &desc, NULL);
+	memcpy(longterm_wrapped_key, longterm_wrapped_keybuf,
+	       longterm_wrapped_key_size);
+
+	memzero_explicit(longterm_wrapped_keybuf, longterm_wrapped_key_size);
+	dma_free_coherent(__scm->dev, longterm_wrapped_key_size,
+			  longterm_wrapped_keybuf, longterm_wrapped_key_phys);
+
+	if (!ret)
+		return longterm_wrapped_key_size;
+
+	return ret;
+}
+EXPORT_SYMBOL(qcom_scm_generate_ice_key);
+
+/**
+ * qcom_scm_prepare_ice_key() - Get per boot ephemeral wrapped key
+ * @longterm_wrapped_key: the wrapped key
+ * @longterm_wrapped_key_size: size of the wrapped key
+ * @ephemeral_wrapped_key: ephemeral wrapped key to be returned
+ * @ephemeral_wrapped_key_size: size of the ephemeral wrapped key
+ *
+ * Qualcomm wrapped keys (longterm keys) are rewrapped with a per-boot
+ * ephemeral key for added protection. These are ephemeral in nature as
+ * they are valid only for that boot. A create key IOCTL is used to
+ * achieve this. These are the keys that are installed into the kernel
+ * to be then unwrapped and programmed into ICE.
+ *
+ * This SCM call adds support for the create key IOCTL to interface
+ * with the secure environment to rewrap the wrapped key with an
+ * ephemeral wrapping key.
+ *
+ * Return: 0 on success; -errno on failure.
+ */
+int qcom_scm_prepare_ice_key(const u8 *longterm_wrapped_key,
+			     u32 longterm_wrapped_key_size,
+			     u8 *ephemeral_wrapped_key,
+			     u32 ephemeral_wrapped_key_size)
+{
+	struct qcom_scm_desc desc = {
+		.svc = QCOM_SCM_SVC_ES,
+		.cmd =  QCOM_SCM_ES_PREPARE_ICE_KEY,
+		.arginfo = QCOM_SCM_ARGS(4, QCOM_SCM_RO,
+					 QCOM_SCM_VAL, QCOM_SCM_RW,
+					 QCOM_SCM_VAL),
+		.args[1] = longterm_wrapped_key_size,
+		.args[3] = ephemeral_wrapped_key_size,
+		.owner = ARM_SMCCC_OWNER_SIP,
+	};
+
+	void *longterm_wrapped_keybuf, *ephemeral_wrapped_keybuf;
+	dma_addr_t longterm_wrapped_key_phys, ephemeral_wrapped_key_phys;
+	int ret;
+
+	/*
+	 * Like qcom_scm_ice_set_key(), we use dma_alloc_coherent() to properly
+	 * get a physical address, while guaranteeing that we can zeroize the
+	 * key material later using memzero_explicit().
+	 *
+	 */
+	longterm_wrapped_keybuf = dma_alloc_coherent(__scm->dev,
+				  longterm_wrapped_key_size,
+				  &longterm_wrapped_key_phys, GFP_KERNEL);
+	if (!longterm_wrapped_keybuf)
+		return -ENOMEM;
+	ephemeral_wrapped_keybuf = dma_alloc_coherent(__scm->dev,
+				   ephemeral_wrapped_key_size,
+				   &ephemeral_wrapped_key_phys, GFP_KERNEL);
+	if (!ephemeral_wrapped_keybuf) {
+		ret = -ENOMEM;
+		goto bail_keybuf;
+	}
+
+	memcpy(longterm_wrapped_keybuf, longterm_wrapped_key,
+	       longterm_wrapped_key_size);
+	desc.args[0] = longterm_wrapped_key_phys;
+	desc.args[2] = ephemeral_wrapped_key_phys;
+
+	ret = qcom_scm_call(__scm->dev, &desc, NULL);
+	if (!ret)
+		memcpy(ephemeral_wrapped_key, ephemeral_wrapped_keybuf,
+		       ephemeral_wrapped_key_size);
+
+	memzero_explicit(ephemeral_wrapped_keybuf, ephemeral_wrapped_key_size);
+	dma_free_coherent(__scm->dev, ephemeral_wrapped_key_size,
+			  ephemeral_wrapped_keybuf,
+			  ephemeral_wrapped_key_phys);
+
+bail_keybuf:
+	memzero_explicit(longterm_wrapped_keybuf, longterm_wrapped_key_size);
+	dma_free_coherent(__scm->dev, longterm_wrapped_key_size,
+			  longterm_wrapped_keybuf, longterm_wrapped_key_phys);
+
+	if (!ret)
+		return ephemeral_wrapped_key_size;
+
+	return ret;
+}
+EXPORT_SYMBOL(qcom_scm_prepare_ice_key);
+
+/**
+ * qcom_scm_import_ice_key() - Import a wrapped key for encryption
+ * @imported_key: the raw key that is imported
+ * @imported_key_size: size of the key to be imported
+ * @longterm_wrapped_key: the wrapped key to be returned
+ * @longterm_wrapped_key_size: size of the wrapped key
+ *
+ * Conceptually, this is very similar to generate, the difference being,
+ * here we want to import a raw key and return a longterm wrapped key
+ * from it. THe same create key IOCTL is used to achieve this.
+ *
+ * This SCM call adds support for the create key IOCTL to interface with
+ * the secure environment to import a raw key and generate a longterm
+ * wrapped key.
+ *
+ * Return: 0 on success; -errno on failure.
+ */
+int qcom_scm_import_ice_key(const u8 *imported_key, u32 imported_key_size,
+			    u8 *longterm_wrapped_key,
+			    u32 longterm_wrapped_key_size)
+{
+	struct qcom_scm_desc desc = {
+		.svc = QCOM_SCM_SVC_ES,
+		.cmd =  QCOM_SCM_ES_IMPORT_ICE_KEY,
+		.arginfo = QCOM_SCM_ARGS(4, QCOM_SCM_RO,
+					 QCOM_SCM_VAL, QCOM_SCM_RW,
+					 QCOM_SCM_VAL),
+		.args[1] = imported_key_size,
+		.args[3] = longterm_wrapped_key_size,
+		.owner = ARM_SMCCC_OWNER_SIP,
+	};
+
+	void *imported_keybuf, *longterm_wrapped_keybuf;
+	dma_addr_t imported_key_phys, longterm_wrapped_key_phys;
+	int ret;
+	/*
+	 * Like qcom_scm_ice_set_key(), we use dma_alloc_coherent() to properly
+	 * get a physical address, while guaranteeing that we can zeroize the
+	 * key material later using memzero_explicit().
+	 *
+	 */
+	imported_keybuf = dma_alloc_coherent(__scm->dev, imported_key_size,
+			  &imported_key_phys, GFP_KERNEL);
+	if (!imported_keybuf)
+		return -ENOMEM;
+	longterm_wrapped_keybuf = dma_alloc_coherent(__scm->dev,
+				  longterm_wrapped_key_size,
+				  &longterm_wrapped_key_phys, GFP_KERNEL);
+	if (!longterm_wrapped_keybuf) {
+		ret = -ENOMEM;
+		goto bail_keybuf;
+	}
+
+	memcpy(imported_keybuf, imported_key, imported_key_size);
+	desc.args[0] = imported_key_phys;
+	desc.args[2] = longterm_wrapped_key_phys;
+
+	ret = qcom_scm_call(__scm->dev, &desc, NULL);
+	if (!ret)
+		memcpy(longterm_wrapped_key, longterm_wrapped_keybuf,
+		       longterm_wrapped_key_size);
+
+	memzero_explicit(longterm_wrapped_keybuf, longterm_wrapped_key_size);
+	dma_free_coherent(__scm->dev, longterm_wrapped_key_size,
+			  longterm_wrapped_keybuf, longterm_wrapped_key_phys);
+bail_keybuf:
+	memzero_explicit(imported_keybuf, imported_key_size);
+	dma_free_coherent(__scm->dev, imported_key_size, imported_keybuf,
+			  imported_key_phys);
+
+	if (!ret)
+		return longterm_wrapped_key_size;
+
+	return ret;
+}
+EXPORT_SYMBOL(qcom_scm_import_ice_key);
+
+/**
  * qcom_scm_hdcp_available() - Check if secure environment supports HDCP.
  *
  * Return true if HDCP is supported, false if not.

@@ -112,6 +112,16 @@ extern int qcom_scm_ice_set_key(u32 index, const u8 *key, u32 key_size,
 extern int qcom_scm_derive_sw_secret(const u8 *wrapped_key,
 				     u32 wrapped_key_size, u8 *sw_secret,
 				     u32 secret_size);
+extern int qcom_scm_generate_ice_key(u8 *longterm_wrapped_key,
+				     u32 longterm_wrapped_key_size);
+extern int qcom_scm_prepare_ice_key(const u8 *longterm_wrapped_key,
+				    u32 longterm_wrapped_key_size,
+				    u8 *ephemeral_wrapped_key,
+				    u32 ephemeral_wrapped_key_size);
+extern int qcom_scm_import_ice_key(const u8 *imported_key,
+				   u32 imported_key_size,
+				   u8 *longterm_wrapped_key,
+				   u32 longterm_wrapped_key_size);
 
 extern bool qcom_scm_hdcp_available(void);
 extern int qcom_scm_hdcp_req(struct qcom_scm_hdcp_req *req, u32 req_cnt,
