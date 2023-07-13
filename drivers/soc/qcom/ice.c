@@ -21,6 +21,13 @@
 
 #define AES_256_XTS_KEY_SIZE			64
 
+/*
+ * Wrapped key sizes from HWKm is different for different versions of
+ * HW. It is not expected to change again in the future.
+ */
+#define QCOM_ICE_HWKM_WRAPPED_KEY_SIZE(v)	\
+	((v) == 1 ? 68 : 100)
+
 /* QCOM ICE registers */
 #define QCOM_ICE_REG_VERSION			0x0008
 #define QCOM_ICE_REG_FUSE_SETTING		0x0010
@@ -431,6 +438,71 @@ int qcom_ice_derive_sw_secret(struct qcom_ice *ice, const u8 wrapped_key[],
 					 sw_secret, BLK_CRYPTO_SW_SECRET_SIZE);
 }
 EXPORT_SYMBOL_GPL(qcom_ice_derive_sw_secret);
+
+/**
+ * qcom_ice_generate_key() - Generate a wrapped key for inline encryption
+ * @longterm_wrapped_key: wrapped key that is generated, which is
+ *                        BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE in size.
+ *
+ * Make a scm call into trustzone to generate a wrapped key for storage
+ * encryption using hwkm.
+ *
+ * Return: 0 on success; err on failure.
+ */
+int qcom_ice_generate_key(struct qcom_ice *ice,
+	u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
+{
+	return qcom_scm_generate_ice_key(longterm_wrapped_key,
+				QCOM_ICE_HWKM_WRAPPED_KEY_SIZE(ice->hwkm_version));
+}
+EXPORT_SYMBOL_GPL(qcom_ice_generate_key);
+
+/**
+ * qcom_ice_prepare_key() - Prepare a longterm wrapped key for inline encryption
+ * @longterm_wrapped_key: wrapped key that is generated,
+ * @longterm_wrapped_key_size: size of the longterm wrapped_key
+ * @ephemerally_wrapped_key: wrapped key returned which has been wrapped with
+ *                           a per-boot ephemeral key, size of which is
+ *                           BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE in size.
+ *
+ * Make a scm call into trustzone to prepare a wrapped key for storage
+ * encryption by rewrapping the longterm wrapped key with a per boot ephemeral
+ * key using hwkm.
+ *
+ * Return: 0 on success; err on failure.
+ */
+int qcom_ice_prepare_key(struct qcom_ice *ice,
+	const u8 *longterm_wrapped_key, unsigned int longterm_wrapped_key_size,
+	u8 ephemerally_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
+{
+	return qcom_scm_prepare_ice_key(longterm_wrapped_key,
+				longterm_wrapped_key_size,
+				ephemerally_wrapped_key,
+				QCOM_ICE_HWKM_WRAPPED_KEY_SIZE(ice->hwkm_version));
+}
+EXPORT_SYMBOL_GPL(qcom_ice_prepare_key);
+
+/**
+ * qcom_ice_import_key() - Import a raw key for inline encryption
+ * @imported_key: raw key that has to be imported
+ * @imported_key_size: size of the imported key
+ * @longterm_wrapped_key: wrapped key that is imported, which is
+ *                        BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE in size.
+ *
+ * Make a scm call into trustzone to import a raw key for storage encryption
+ * and generating a longterm wrapped key using hwkm.
+ *
+ * Return: 0 on success; err on failure.
+ */
+int qcom_ice_import_key(struct qcom_ice *ice,
+	const u8 *imported_key, unsigned int imported_key_size,
+	u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
+{
+	return qcom_scm_import_ice_key(imported_key, imported_key_size,
+				longterm_wrapped_key,
+				QCOM_ICE_HWKM_WRAPPED_KEY_SIZE(ice->hwkm_version));
+}
+EXPORT_SYMBOL_GPL(qcom_ice_import_key);
 
 static struct qcom_ice *qcom_ice_create(struct device *dev,
 					void __iomem *base)
