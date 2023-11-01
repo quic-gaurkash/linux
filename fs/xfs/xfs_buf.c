@@ -481,7 +481,8 @@ _xfs_buf_obj_cmp(
 		 * reallocating a busy extent. Skip this buffer and
 		 * continue searching for an exact match.
 		 */
-		ASSERT(bp->b_flags & XBF_STALE);
+		if (!(map->bm_flags & XBM_LIVESCAN))
+			ASSERT(bp->b_flags & XBF_STALE);
 		return 1;
 	}
 	return 0;
@@ -559,6 +560,10 @@ xfs_buf_find_lock(
 	 * intact here.
 	 */
 	if (bp->b_flags & XBF_STALE) {
+		if (flags & XBF_LIVESCAN) {
+			xfs_buf_unlock(bp);
+			return -ENOENT;
+		}
 		ASSERT((bp->b_flags & _XBF_DELWRI_Q) == 0);
 		bp->b_flags &= _XBF_KMEM | _XBF_PAGES;
 		bp->b_ops = NULL;
@@ -682,6 +687,8 @@ xfs_buf_get_map(
 	int			error;
 	int			i;
 
+	if (flags & XBF_LIVESCAN)
+		cmap.bm_flags |= XBM_LIVESCAN;
 	for (i = 0; i < nmaps; i++)
 		cmap.bm_len += map[i].bm_len;
 
@@ -1943,9 +1950,10 @@ xfs_free_buftarg(
 	percpu_counter_destroy(&btp->bt_io_count);
 	list_lru_destroy(&btp->bt_lru);
 
-	blkdev_issue_flush(btp->bt_bdev);
-	invalidate_bdev(btp->bt_bdev);
 	fs_put_dax(btp->bt_daxdev, btp->bt_mount);
+	/* the main block device is closed by kill_block_super */
+	if (btp->bt_bdev != btp->bt_mount->m_super->s_bdev)
+		bdev_release(btp->bt_bdev_handle);
 
 	kmem_free(btp);
 }
@@ -1980,16 +1988,15 @@ xfs_setsize_buftarg(
  */
 STATIC int
 xfs_setsize_buftarg_early(
-	xfs_buftarg_t		*btp,
-	struct block_device	*bdev)
+	xfs_buftarg_t		*btp)
 {
-	return xfs_setsize_buftarg(btp, bdev_logical_block_size(bdev));
+	return xfs_setsize_buftarg(btp, bdev_logical_block_size(btp->bt_bdev));
 }
 
 struct xfs_buftarg *
 xfs_alloc_buftarg(
 	struct xfs_mount	*mp,
-	struct block_device	*bdev)
+	struct bdev_handle	*bdev_handle)
 {
 	xfs_buftarg_t		*btp;
 	const struct dax_holder_operations *ops = NULL;
@@ -2000,9 +2007,10 @@ xfs_alloc_buftarg(
 	btp = kmem_zalloc(sizeof(*btp), KM_NOFS);
 
 	btp->bt_mount = mp;
-	btp->bt_dev =  bdev->bd_dev;
-	btp->bt_bdev = bdev;
-	btp->bt_daxdev = fs_dax_get_by_bdev(bdev, &btp->bt_dax_part_off,
+	btp->bt_bdev_handle = bdev_handle;
+	btp->bt_dev = bdev_handle->bdev->bd_dev;
+	btp->bt_bdev = bdev_handle->bdev;
+	btp->bt_daxdev = fs_dax_get_by_bdev(btp->bt_bdev, &btp->bt_dax_part_off,
 					    mp, ops);
 
 	/*
@@ -2012,7 +2020,7 @@ xfs_alloc_buftarg(
 	ratelimit_state_init(&btp->bt_ioerror_rl, 30 * HZ,
 			     DEFAULT_RATELIMIT_BURST);
 
-	if (xfs_setsize_buftarg_early(btp, bdev))
+	if (xfs_setsize_buftarg_early(btp))
 		goto error_free;
 
 	if (list_lru_init(&btp->bt_lru))

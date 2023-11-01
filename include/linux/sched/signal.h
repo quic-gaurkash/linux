@@ -649,17 +649,15 @@ extern void flush_itimer_signals(void);
 extern bool current_is_single_threaded(void);
 
 /*
- * Careful: do_each_thread/while_each_thread is a double loop so
- *          'break' will not work as expected - use goto instead.
+ * Without tasklist/siglock it is only rcu-safe if g can't exit/exec,
+ * otherwise next_thread(t) will never reach g after list_del_rcu(g).
  */
-#define do_each_thread(g, t) \
-	for (g = t = &init_task ; (g = t = next_task(g)) != &init_task ; ) do
-
 #define while_each_thread(g, t) \
 	while ((t = next_thread(t)) != g)
 
 #define __for_each_thread(signal, t)	\
-	list_for_each_entry_rcu(t, &(signal)->thread_head, thread_node)
+	list_for_each_entry_rcu(t, &(signal)->thread_head, thread_node, \
+		lockdep_is_held(&tasklist_lock))
 
 #define for_each_thread(p, t)		\
 	__for_each_thread((p)->signal, t)
